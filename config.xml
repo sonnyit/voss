@@ -1,0 +1,47 @@
+<GAME STARTDATE="2012-09-22" NAME="WTVN" />
+
+<DB>
+    <SOURCE   HOST="10.60.9.3" PORT="3306" ACCOUNT="oss" PASSWORD="Mm8kAjElKK" NAME="wtvn_log" />
+    <DEST HOST="localhost" PORT="3306" ACCOUNT="root" PASSWORD="" NAME="dbWtvnOssResult" />
+    <REDIS  HOST="localhost" PORT="6379" PASSWORD="" />
+</DB>
+
+<QUERY>
+	<deposit TABLE="convert_zingxu" dtLogTime="get_date">
+		<FIELDS iRoleId="role_id" iMoney="sum(diamond)" iServer="server_id" iLevel="play_grade" iTimes="count(1)" />
+		<CONDITION WHERE="can_use=1" GROUPBY="role_id, server_id" />
+	</deposit>
+	
+	<user TABLE="login_logout" dtLogTime="log_date">
+		<FIELDS iRoleId="role_id" iServer="server_id" iLevel="max(grade)" iTimes="count(1)" />
+		<CONDITION WHERE="type_login_logout=0" GROUPBY="role_id, server_id" />
+	</user>
+	
+    <CONSUMER TABLE="ib_shop" dtLogTime="log_date">
+        <FIELDS iUinId="account_id" iConsume="sum(diamond)" iPayTimes="sum(buy_count)" iRoleLevel="max(grade)" iWorldId="server_id" />
+        <CONDITION  WHERE="diamond>0" GROUPBY="account_id, server_id"/>
+    </CONSUMER>
+    
+    <MONEYCONSUME TABLE="money_flow" dtLogTime="log_date">
+        <FIELDS iRoleNum="count(account_id)" iMoney="abs(sum(point))" iConsume="son_type" iRoleLevel="grade" iWorldId="server_id" />
+        <CONDITION WHERE="point<0" GROUPBY="son_type, grade, server_id" />
+    </MONEYCONSUME>
+    
+    <MONEYPRODUCE TABLE="money_flow" dtLogTime="log_date">
+        <FIELDS iRoleNum="count(account_id)" iMoney="abs(sum(point))" iProduce="son_type" iRoleLevel="grade" iWorldId="server_id" />
+        <CONDITION WHERE="point>0" GROUPBY="son_type, grade, server_id" />
+    </MONEYPRODUCE>
+    
+    <GOODS TABLE="ib_shop" dtLogTime="log_date">
+        <FIELDS iWorldId="server_id" iGoodsId="item_id" iPaymentGamePoint="sum(diamond)" iGoodsNum="sum(buy_count)" iPayUinCount="account_id" iPayRoleCount="role_id" iPaymentExp="consortiaOff" />
+        <CONDITION WHERE="" GROUPBY="iWorldId, iGoodsId, iPayUinCount, iPayRoleCount" />
+    );
+    
+    </GOODS>
+    
+</QUERY>
+
+<STATISTIC_PARAMETER>
+	<EFFECTIVE_USER CONTINUOUS="4" FROM_DAY_N="5" AT_LEAST="2" />
+</STATISTIC_PARAMETER>
+

@@ -1,0 +1,83 @@
+/*
+ * base.cpp
+ *
+ *  Created on: May 12, 2013
+ *      Author: root
+ */
+
+#ifndef LOGGING_LEVEL_1
+#define LOGGING_LEVEL_1
+#endif
+
+#include "base.h"
+#include "pools_manager.h"
+#include "def.h"
+#include "utils.h"
+#include "redis.h"
+#include "config_reader.h"
+#include "logger.h"
+#include "audit_thread.h"
+
+#include <fstream>
+#include <map>
+#include <iostream>
+
+using namespace std;
+
+void Base::get_data(const string& str_iso_date, const string& index,
+                    bool force) {
+
+  LOG("\t<get data>");
+  Utils::loadbar(1);
+
+  // execute query to get data from source database
+  timestamp_t t0 = get_timestamp();
+  Connection* conn = PoolsManager::get_instance().get_src_db_connection();
+  boost::shared_ptr<sql::Statement> stmt(conn->createStatement());
+  string db_src = "";
+  ConfigReader::get_db_src_name(db_src);
+  stmt->execute("use " + db_src);
+
+  boost::shared_ptr<sql::ResultSet> res(
+      stmt->executeQuery(ConfigReader::build_query(index, str_iso_date)));
+  //ResultSetMetaData *res_meta = res->getMetaData();
+
+  LOG("\t\t+ query done in source database in: ",
+      (get_timestamp() - t0) / 1000000.0L, "s.");
+  Utils::loadbar(50);
+
+  t0 = get_timestamp();
+  vector<string> row;
+  vector< vector<string> > rows;
+
+  string id = "";
+  string user = "";
+  string server_hash = "";
+
+  while (res->next()) {
+    row.push_back(res->getString("iRoleId"));
+    row.push_back(res->getString("iServer"));
+    row.push_back(res->getString("iLevel"));
+    row.push_back(res->getString("iTimes"));
+
+    rows.push_back(row);
+    row.clear();
+  }
+  Utils::loadbar(90);
+
+  PoolsManager::get_instance().release_src_db_connection(conn);
+  LOG("\t\t+ input data to redis database done in: ",
+      (get_timestamp() - t0) / 1000000.0L, "s.");
+  Utils::loadbar(95);
+  
+  
+  // create new thread to write to result db
+  AuditThread::get_instance().increase_count_thread();
+  boost::thread t1(&PoolsManager::write_to_tbAccess,
+                   &PoolsManager::get_instance(), str_iso_date, rows);
+
+  LOG("\t<done get data>");
+  Utils::loadbar(100);
+  cout << endl;
+}
+

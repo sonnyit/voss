@@ -1,0 +1,9 @@
+/Release/makefile
+/Release/org_makefile
+/Debug
+/Release/*
+/Release/src/*
+!/Release/src
+/Release/redis/*
+!/Release/redis
+#!/Release/makefile
