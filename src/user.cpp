@@ -71,19 +71,8 @@ void User::user_export(const string& str_iso_date) {
   //cout << "export recovered user:\n";
   //fill_tbRecoveredUser(str_iso_date);
 
-  //cout << "old effective user:\n";
-  //fill_tbEffectiveUser_Old(str_iso_date);
-
-  cout << "effective user:\n";
-  fill_tbEffectiveUser(str_iso_date);
-
-  //cout << "export right effective user:\n";
-  //find_new_effective_users_wrong(str_iso_date);
-  //find_new_effective_users_maybe(str_iso_date);
-  //effective_state(str_iso_date);
-
-  //cout << "effective voss fix:\n";
-  //find_effective_fix(str_iso_date);
+  cout << "export effective user:\n";
+  export_EffectiveUser(str_iso_date);
 
   // check if any thread not done
   while (AuditThread::get_instance().get_count_thread() != 0)
@@ -978,633 +967,6 @@ void User::find_num_reg_of_natural_month(
   Redis::free_replies();
 }
 
-void User::find_new_effective_users(
-    const string& isoDateStat,
-    ResultTable<TableEffecUserLvDis>::Type& uomResult) {
-
-  if (key_point_date.statis_day - days(config_effective_user.continuous_)
-      < key_point_date.day_begin_month0) {
-    return;
-  }
-
-  date date_iterator0, date_iterator1, date_iterator2, date_iterator3;
-
-  string r2d1 = "tm_r2d1";
-  string r2d0 = "tm_r2d0";
-  string r_in_d0 = "tm_r_in_d0";
-  string r_in_month = "tm_r_in_month";
-
-  vector<unsigned> ids_candidate;
-  vector<string> info;
-  ids_candidate.clear();
-  info.clear();
-
-  string local_candidate = "tm_local_candidate";
-  string keys = "";
-
-  Utils::create_bm_of_period(INDEX::USER, "-inf",
-      to_iso_string(key_point_date.day_end_month1),
-      r2d1);
-
-  Redis::bitop_comm("OR", r2d0, r2d1);
-  Redis::free_reply();
-
-  // loop from begin month0 to statis date
-  // for each day:
-  //    case1: find numbers of user had reg in this day and continuous login 4 day next
-  //    case2: find numbers of user had reg in this day and from 6th day after this day
-  //            to statistic day, he login at least 2 days.
-  for (date_iterator0 = key_point_date.day_begin_month0;
-      date_iterator0
-      <= key_point_date.statis_day - days(config_effective_user.continuous_);
-      date_iterator0 += days(1)) {
-    Redis::bitop_append_comm(
-        "OR",
-        r2d0,
-        r2d1 + " "
-        + Utils::build_key(DATA_TYPE::BITMAP, INDEX::USER,
-          to_iso_string(date_iterator0)));
-
-    Redis::bitop_append_comm("XOR", r_in_d0, r2d1 + " " + r2d0);
-    Redis::bitop_append_comm("OR", r_in_month, r_in_month + " " + r_in_d0);
-
-    //----------------  case 1
-    // if reg in d0 and login continuous 4 days:
-    // reg_d0 AND log_d0 AND log_d1 AND log_d2 AND log_d3 AND log_d4
-    keys = "";
-    for (unsigned i = 0; i <= config_effective_user.continuous_; ++i) {
-      keys += Utils::build_key(DATA_TYPE::BITMAP, INDEX::USER,
-          to_iso_string(date_iterator0 + days(i))) + " ";
-    }
-    keys += r_in_d0;
-
-    Redis::bitop_append_comm("AND", local_candidate, keys);
-    Redis::bitop_append_comm("OR", BM::EFFECTIVE_NEW_USERS,
-        BM::EFFECTIVE_NEW_USERS + " " + local_candidate);
-
-    Redis::del_append_comm(local_candidate);
-    //------------------ case 2
-    // from 6th day (day + 5) duyet toi statis day:
-    // if from 6th day to statis day have at least 2 day login and reg in this month is effective
-    date_iterator1 = date_iterator0 + days(config_effective_user.from_day_n_);
-    for (date_iterator2 = date_iterator1 + days(1);
-        date_iterator2 <= key_point_date.statis_day;
-        date_iterator2 += days(1)) {
-
-      // login_d1 AND login_d2 AND reg_in_month
-      keys = Utils::build_key(DATA_TYPE::BITMAP, INDEX::USER,
-          to_iso_string(date_iterator1)) + " "
-        + Utils::build_key(DATA_TYPE::BITMAP, INDEX::USER,
-            to_iso_string(date_iterator2)) + " " + r_in_month;
-
-      Redis::bitop_append_comm("AND", local_candidate, keys);
-      Redis::bitop_append_comm("OR", BM::EFFECTIVE_NEW_USERS,
-          BM::EFFECTIVE_NEW_USERS + " " + local_candidate);
-
-      Redis::del_append_comm(local_candidate);
-    }
-
-    Redis::bitop_append_comm(
-        "OR",
-        r2d1,
-        r2d1 + " "
-        + Utils::build_key(DATA_TYPE::BITMAP, INDEX::USER,
-          to_iso_string(date_iterator0)));
-    Redis::del_append_comm(r_in_d0);
-  }
-  Redis::free_replies();
-
-  // have bitmap new effective user, find detail
-  unsigned bm_size = 0;
-
-  Redis::strlen_comm(BM::EFFECTIVE_NEW_USERS);
-  bm_size = Redis::reply->integer;
-  Redis::free_reply();
-
-  Redis::get_comm(BM::EFFECTIVE_NEW_USERS);
-  Utils::get_ids_from_bitmap(ids_candidate, Redis::reply->str, bm_size);
-  Redis::free_reply();
-
-  for (unsigned i = 0; i < ids_candidate.size(); ++i) {
-    Redis::zrevrangebyscore_append_comm(
-        INDEX::USER + ":" + Utils::convert<unsigned, string>(ids_candidate[i]),
-        isoDateStat, to_iso_string(key_point_date.day_begin_month0),
-        "limit 0 1");
-  }
-
-  Redis::get_and_free_replies(info);
-  statistic_effective_by_level_distributed(info, uomResult, eNewEffectiveNum);
-
-  vector<string> account_names;
-  Utils::get_account_from_bitmap(account_names, BM::EFFECTIVE_NEW_USERS, "new_eff_wrong.txt");
-
-  Redis::del_append_comm(r2d1);
-  Redis::del_append_comm(r2d0);
-  Redis::del_append_comm(r_in_d0);
-  Redis::del_append_comm(r_in_month);
-  Redis::del_append_comm(local_candidate);
-  Redis::del_append_comm(BM::EFFECTIVE_NEW_USERS);
-  Redis::free_replies();
-}
-
-void User::find_new_effective_users_of_month(
-    const std::string& str_iso_stat_date) {
-  // like find_new_effective_users
-
-  //timestamp_t t0 = get_timestamp();
-  greg_month m = from_undelimited_string(str_iso_stat_date).month();
-  greg_year y = from_undelimited_string(str_iso_stat_date).year();
-
-  date date_iterator0, date_iterator1, date_iterator2, date_iterator3;
-  date begin_month0 = date(y, m, 1);
-  date begin_month1 = date(y, m, 1) - months(1);
-
-  date end_month0 = begin_month0.end_of_month();
-  date end_month1 = begin_month1.end_of_month();
-
-  string r2d1 = "tm_r2d1";
-  string r2d0 = "tm_r2d0";
-  string r_in_d0 = "tm_r_in_d0";
-  string r_in_month = "tm_r_in_month";
-
-  string local_candidate = "tm_local_candidate";
-  string keys = "";
-
-  Utils::create_bm_of_period(INDEX::USER, "-inf", to_iso_string(end_month1),
-      r2d1);
-  Redis::bitop_comm("OR", r2d0, r2d1);
-  Redis::free_reply();
-
-  for (date_iterator0 = begin_month0; date_iterator0 <= end_month0;
-      date_iterator0 += days(1)) {
-    Redis::bitop_append_comm(
-        "OR",
-        r2d0,
-        r2d1 + " "
-        + Utils::build_key(DATA_TYPE::BITMAP, INDEX::USER,
-          to_iso_string(date_iterator0)));
-
-    Redis::bitop_append_comm("XOR", r_in_d0, r2d1 + " " + r2d0);
-    Redis::bitop_append_comm("OR", r_in_month, r_in_month + " " + r_in_d0);
-
-    keys = "";
-    for (unsigned i = 0; i <= config_effective_user.continuous_; ++i) {
-      keys += Utils::build_key(DATA_TYPE::BITMAP, INDEX::USER,
-          to_iso_string(date_iterator0 + days(i))) + " ";
-    }
-    keys += r_in_d0;
-
-    Redis::bitop_append_comm("AND", local_candidate, keys);
-    Redis::bitop_append_comm("OR", BM::EFFECTIVE_NEW_USERS,
-        BM::EFFECTIVE_NEW_USERS + " " + local_candidate);
-    Redis::del_append_comm(local_candidate);
-
-    date_iterator1 = date_iterator0 + days(config_effective_user.from_day_n_);
-    for (date_iterator2 = date_iterator1 + days(1);
-        date_iterator2 <= end_month0 + days(5); date_iterator2 += days(1)) {
-      keys = Utils::build_key(DATA_TYPE::BITMAP, INDEX::USER,
-          to_iso_string(date_iterator1)) + " "
-        + Utils::build_key(DATA_TYPE::BITMAP, INDEX::USER,
-            to_iso_string(date_iterator2)) + " " + r_in_month;
-
-      Redis::bitop_append_comm("AND", local_candidate, keys);
-      Redis::bitop_append_comm("OR", BM::EFFECTIVE_NEW_USERS,
-          BM::EFFECTIVE_NEW_USERS + " " + local_candidate);
-      Redis::del_append_comm(local_candidate);
-    }
-
-    Redis::bitop_append_comm(
-        "OR",
-        r2d1,
-        r2d1 + " "
-        + Utils::build_key(DATA_TYPE::BITMAP, INDEX::USER,
-          to_iso_string(date_iterator0)));
-    Redis::del_append_comm(r_in_d0);
-  }
-  Redis::free_replies();
-
-  Redis::bitcount_comm(BM::EFFECTIVE_NEW_USERS);
-  Redis::free_reply();
-
-  Redis::del_append_comm(r2d1);
-  Redis::del_append_comm(r2d0);
-  Redis::del_append_comm(r_in_d0);
-  Redis::del_append_comm(r_in_month);
-  Redis::del_append_comm(local_candidate);
-  Redis::free_replies();
-}
-
-void User::find_back_effective_users(
-    const string& str_iso_stat_date,
-    ResultTable<TableEffecUserLvDis>::Type& uomResult) {
-
-  date dit, dit1, dit2, dit3;
-
-  string local_candidate = "tm_local_candidate";
-  string keys = "";
-
-  string l_in_month1 = "tm_l_in_month1";
-  string nl_in_month1 = "tm_nl_in_month1";
-  string r_2_month2 = "tm_r_2_month2";
-  string bm_candidate = "tm_bm_candidate";
-
-  // begin game ---------- end_month2 --------- end_month1 ----------- statis_day
-  // find all users, who had registered from begin game to end month2
-  // and not login in month1 as "candidate" back effective user
-
-  Utils::create_bm_of_period(INDEX::USER, "-inf",
-      to_iso_string(key_point_date.day_end_month2),
-      r_2_month2);
-  Utils::create_bm_of_period(INDEX::USER,
-      to_iso_string(key_point_date.day_begin_month1),
-      to_iso_string(key_point_date.day_end_month1),
-      l_in_month1);
-
-  Redis::bitop_append_comm("NOT", nl_in_month1, l_in_month1);
-  Redis::bitop_append_comm("AND", bm_candidate,
-      r_2_month2 + " " + nl_in_month1);
-  Redis::free_replies();
-
-  // loop from begin_month0 to statis day, for each day, find 2 case:
-  //    case1: find users had login in this day, and continuous 4 days next
-  //    case2: find users from 6th day from this day, to statis day, had login at least 2 days
-  for (dit = key_point_date.day_begin_month0;
-      dit <= key_point_date.statis_day - days(config_effective_user.continuous_);
-      dit += days(1)) {
-
-    keys = "";
-    for (unsigned i = 0; i <= config_effective_user.continuous_; ++i) {
-      keys += Utils::build_key(DATA_TYPE::BITMAP, INDEX::USER,
-          to_iso_string(dit + days(i))) + " ";
-    }
-    keys += bm_candidate;
-
-    Redis::bitop_append_comm("AND", local_candidate, keys);
-    Redis::bitop_append_comm(
-        "OR", BM::EFFECTIVE_RETURN_USERS,
-        BM::EFFECTIVE_RETURN_USERS + " " + local_candidate);
-    Redis::del_append_comm(local_candidate);
-
-    dit1 = dit + days(config_effective_user.from_day_n_);
-    for (dit2 = dit1 + days(1); dit2 <= key_point_date.statis_day;
-        dit2 += days(1)) {
-      keys = Utils::build_key(DATA_TYPE::BITMAP, INDEX::USER,
-          to_iso_string(dit1)) + " "
-        + Utils::build_key(DATA_TYPE::BITMAP, INDEX::USER,
-            to_iso_string(dit2)) + " "
-        + Utils::build_key(DATA_TYPE::BITMAP, INDEX::USER, to_iso_string(dit))
-        + " " + bm_candidate;
-
-      Redis::bitop_append_comm("AND", local_candidate, keys);
-      Redis::bitop_append_comm(
-          "OR", BM::EFFECTIVE_RETURN_USERS,
-          BM::EFFECTIVE_RETURN_USERS + " " + local_candidate);
-      Redis::del_append_comm(local_candidate);
-    }
-  }
-  Redis::free_replies();
-
-  // we have BM:EFFECTIVE_RETURN_USERS contain all user effective back
-  // now, find detail: for each server, level
-  vector<unsigned> ids_candidate;
-  vector<string> info;
-  ids_candidate.clear();
-  info.clear();
-
-  unsigned bm_size = 0;
-  Redis::strlen_comm(BM::EFFECTIVE_RETURN_USERS);
-  bm_size = Redis::reply->integer;
-  Redis::free_reply();
-
-  Redis::get_comm(BM::EFFECTIVE_RETURN_USERS);
-  Utils::get_ids_from_bitmap(ids_candidate, Redis::reply->str, bm_size);
-  Redis::free_reply();
-
-  for (unsigned i = 0; i < ids_candidate.size(); ++i) {
-    Redis::zrevrangebyscore_append_comm(
-        INDEX::USER + ":" + Utils::convert<unsigned, string>(ids_candidate[i]),
-        str_iso_stat_date, to_iso_string(key_point_date.day_begin_month0),
-        "limit 0 1");
-  }
-  Redis::get_and_free_replies(info);
-  statistic_effective_by_level_distributed(info, uomResult, eBackEffectiveNum);
-
-  vector<string> account_names;
-  Utils::get_account_from_bitmap(account_names, BM::EFFECTIVE_RETURN_USERS, "return_eff_wrong.txt");
-
-  Redis::del_append_comm(r_2_month2);
-  Redis::del_append_comm(l_in_month1);
-  Redis::del_append_comm(nl_in_month1);
-  Redis::del_append_comm(bm_candidate);
-  Redis::del_append_comm(BM::EFFECTIVE_RETURN_USERS);
-  Redis::free_replies();
-}
-
-void User::find_back_effective_users_of_month(const string& str_iso_stat_date) {
-  // like find_back_effective_users
-  date date_iterator0, date_iterator1, date_iterator2, date_iterator3;
-  string local_candidate = "tm_local_candidate";
-  string keys = "";
-
-  greg_month m = from_undelimited_string(str_iso_stat_date).month();
-  greg_year y = from_undelimited_string(str_iso_stat_date).year();
-  date begin_month0 = date(y, m, 1);
-  date begin_month1 = date(y, m, 1) - months(1);
-  date begin_month2 = date(y, m, 1) - months(2);
-
-  date end_month0 = begin_month0.end_of_month();
-  date end_month1 = begin_month1.end_of_month();
-  date end_month2 = begin_month2.end_of_month();
-
-  string l_in_month1 = "tm_l_in_month1";
-  string nl_in_month1 = "tm_nl_in_month1";
-  string r_2_month2 = "tm_r_2_month2";
-  string bm_candidate = "tm_bm_candidate";
-
-  Utils::create_bm_of_period(INDEX::USER, "-inf", to_iso_string(end_month2),
-      r_2_month2);
-  Utils::create_bm_of_period(INDEX::USER, to_iso_string(begin_month1),
-      to_iso_string(end_month1), l_in_month1);
-
-  Redis::bitop_append_comm("NOT", nl_in_month1, l_in_month1);
-  Redis::bitop_append_comm("AND", bm_candidate,
-      r_2_month2 + " " + nl_in_month1);
-  Redis::free_replies();
-
-  for (date_iterator0 = begin_month0; date_iterator0 <= end_month0;
-      date_iterator0 += days(1)) {
-
-    keys = "";
-    for (unsigned i = 0; i < config_effective_user.continuous_; ++i) {
-      keys += Utils::build_key(DATA_TYPE::BITMAP, INDEX::USER,
-          to_iso_string(date_iterator0 + days(i))) + " ";
-    }
-    keys += bm_candidate;
-
-    Redis::bitop_append_comm("AND", local_candidate, keys);
-    Redis::bitop_append_comm(
-        "OR", BM::EFFECTIVE_RETURN_USERS,
-        BM::EFFECTIVE_RETURN_USERS + " " + local_candidate);
-    Redis::del_append_comm(local_candidate);
-
-    date_iterator1 = date_iterator0 + days(config_effective_user.from_day_n_);
-    for (date_iterator2 = date_iterator1 + days(1);
-        date_iterator2 <= key_point_date.day_end_month0 + days(4);
-        date_iterator2 += days(1)) {
-      keys = Utils::build_key(DATA_TYPE::BITMAP, INDEX::USER,
-          to_iso_string(date_iterator1)) + " "
-        + Utils::build_key(DATA_TYPE::BITMAP, INDEX::USER,
-            to_iso_string(date_iterator2)) + " "
-        + Utils::build_key(DATA_TYPE::BITMAP, INDEX::USER,
-            to_iso_string(date_iterator0)) + " "
-        + bm_candidate;
-
-      Redis::bitop_append_comm("AND", local_candidate, keys);
-      Redis::bitop_append_comm(
-          "OR", BM::EFFECTIVE_RETURN_USERS,
-          BM::EFFECTIVE_RETURN_USERS + " " + local_candidate);
-      Redis::del_append_comm(local_candidate);
-    }
-  }
-  Redis::free_replies();
-
-  Redis::del_append_comm(r_2_month2);
-  Redis::del_append_comm(l_in_month1);
-  Redis::del_append_comm(nl_in_month1);
-  Redis::del_append_comm(bm_candidate);
-  Redis::free_replies();
-}
-
-void User::find_old_effective_users(
-    const string& str_iso_stat_date,
-    ResultTable<TableEffecUserLvDis>::Type& uomResult) {
-
-  date date_it = from_simple_string(game_open_date);  // from open date of game
-
-  string l_in_month = "tm_l_in_month";
-  date day_begin_month0;
-  date day_end_month0;
-
-  // for each month from begin game to month of statis day
-  // find:
-  //    effective user of last month and have at least 1 times login in this natural month (old effective)
-  //    new effective user of this natural month
-  //    back effective usre of this natural month
-  // => have effective user of this natural month
-  // => loop
-  while ((date_it.year() < key_point_date.statis_day.year()
-        || (date_it.year() == key_point_date.statis_day.year()
-          && date_it.month() < key_point_date.statis_day.month()))) {
-
-    if (Redis::exists(
-          Utils::build_key(BM::EFFECTIVE_MONTH,
-            to_iso_string(date_it).c_str()))) {
-      Redis::del_append_comm(BM::EFFECTIVE_USERS);
-      Redis::bitop_append_comm(
-          "OR",
-          BM::EFFECTIVE_USERS,
-          BM::EFFECTIVE_USERS + " "
-          + Utils::build_key(BM::EFFECTIVE_MONTH,
-            to_iso_string(date_it).c_str()));
-      Redis::free_replies();
-    } else {
-      Redis::del_append_comm(BM::EFFECTIVE_NEW_USERS);
-      Redis::del_append_comm(BM::EFFECTIVE_RETURN_USERS);
-      Redis::del_append_comm(BM::EFFECTIVE_STAY_USERS);
-      Redis::del_append_comm(l_in_month);
-      Redis::free_replies();
-
-      day_begin_month0 = date(date_it.year(), date_it.month(), 1);
-      day_end_month0 = day_begin_month0.end_of_month();
-
-      find_new_effective_users_of_month(to_iso_string(date_it));
-      find_back_effective_users_of_month(to_iso_string(date_it));
-
-      Utils::create_bm_of_period(INDEX::USER, to_iso_string(day_begin_month0),
-          to_iso_string(day_end_month0), l_in_month);
-
-      Redis::bitop_append_comm("AND", BM::EFFECTIVE_STAY_USERS,
-          l_in_month + " " + BM::EFFECTIVE_USERS);
-      Redis::bitop_append_comm(
-          "OR",
-          BM::EFFECTIVE_USERS,
-          BM::EFFECTIVE_NEW_USERS + " " + BM::EFFECTIVE_RETURN_USERS + " "
-          + BM::EFFECTIVE_STAY_USERS);
-      Redis::bitop_append_comm(
-          "OR",
-          Utils::build_key(BM::EFFECTIVE_MONTH, to_iso_string(date_it).c_str()),
-          BM::EFFECTIVE_USERS);
-      Redis::free_replies();
-    }
-    date_it = date_it + months(1);
-  }
-
-  //------------------- last month effective ---------------------------
-  // take size
-  vector<unsigned> ids_candidate;
-  vector<string> info;
-  ids_candidate.clear();
-  info.clear();
-
-  unsigned bm_size = 0;
-  Redis::strlen_comm(BM::EFFECTIVE_USERS);
-  bm_size = Redis::reply->integer;
-  Redis::free_reply();
-
-  Redis::get_comm(BM::EFFECTIVE_USERS);
-  Utils::get_ids_from_bitmap(ids_candidate, Redis::reply->str, bm_size);
-  Redis::free_reply();
-
-  for (unsigned i = 0; i < ids_candidate.size(); ++i) {
-    Redis::zrevrangebyscore_append_comm(
-        INDEX::USER + ":" + Utils::convert<unsigned, string>(ids_candidate[i]),
-        str_iso_stat_date, "-inf", "limit 0 1");
-  }
-  Redis::get_and_free_replies(info);
-  statistic_effective_by_level_distributed(info, uomResult,
-      eLastMonthEffectiveNum);
-
-  //-------------------- lost effective -------------------
-  Redis::del_append_comm(l_in_month);
-  Redis::free_replies();
-
-  ids_candidate.clear();
-  info.clear();
-
-  string nl_in_month = "tm_nl_in_month";
-  string bm_candidate = "tm_bm_candidate";
-
-  day_begin_month0 = date(date_it.year(), date_it.month(), 1);
-  Utils::create_bm_of_period(INDEX::USER, to_iso_string(day_begin_month0),
-      str_iso_stat_date, l_in_month);
-
-  Redis::bitop_append_comm("NOT", nl_in_month, l_in_month);
-  Redis::bitop_append_comm("AND", bm_candidate,
-      BM::EFFECTIVE_USERS + " " + nl_in_month);
-  Redis::free_replies();
-
-  bm_size = 0;
-  Redis::strlen_comm(bm_candidate);
-  bm_size = Redis::reply->integer;
-  Redis::free_reply();
-
-  Redis::get_comm(bm_candidate);
-  Utils::get_ids_from_bitmap(ids_candidate, Redis::reply->str, bm_size);
-  Redis::free_reply();
-
-  for (unsigned i = 0; i < ids_candidate.size(); ++i) {
-    Redis::zrevrangebyscore_append_comm(
-        INDEX::USER + ":" + Utils::convert<unsigned, string>(ids_candidate[i]),
-        str_iso_stat_date, "-inf", "limit 0 1");
-  }
-  Redis::get_and_free_replies(info);
-  statistic_effective_by_level_distributed(info, uomResult, eLostEffectiveNum);
-
-  Redis::del_append_comm(l_in_month);
-  Redis::del_append_comm(nl_in_month);
-  Redis::del_append_comm(bm_candidate);
-  Redis::free_replies();
-
-  //------------------- Old effective --------------------------------------
-  Redis::del_append_comm(BM::EFFECTIVE_NEW_USERS);
-  Redis::del_append_comm(BM::EFFECTIVE_RETURN_USERS);
-  Redis::del_append_comm(BM::EFFECTIVE_STAY_USERS);
-  Redis::del_append_comm(l_in_month);
-  Redis::free_replies();
-
-  day_begin_month0 = date(date_it.year(), date_it.month(), 1);
-  day_end_month0 = day_begin_month0.end_of_month();
-
-  Utils::create_bm_of_period(INDEX::USER, to_iso_string(day_begin_month0),
-      str_iso_stat_date, l_in_month);
-
-  Redis::bitop_comm("AND", BM::EFFECTIVE_STAY_USERS,
-      l_in_month + " " + BM::EFFECTIVE_USERS);
-  Redis::free_reply();
-
-  // for TEST wrong eff
-  vector<string> account_names;
-  Utils::get_account_from_bitmap(account_names, BM::EFFECTIVE_STAY_USERS, "stay_eff_wrong.txt");
-  //
-
-  // take size
-  ids_candidate.clear();
-  info.clear();
-
-  bm_size = 0;
-  Redis::strlen_comm(BM::EFFECTIVE_STAY_USERS);
-  bm_size = Redis::reply->integer;
-  Redis::free_reply();
-
-  Redis::get_comm(BM::EFFECTIVE_STAY_USERS);
-  Utils::get_ids_from_bitmap(ids_candidate, Redis::reply->str, bm_size);
-  Redis::free_reply();
-
-  for (unsigned i = 0; i < ids_candidate.size(); ++i) {
-    Redis::zrevrangebyscore_append_comm(
-        INDEX::USER + ":" + Utils::convert<unsigned, string>(ids_candidate[i]),
-        str_iso_stat_date, to_iso_string(day_begin_month0), "limit 0 1");
-  }
-  Redis::get_and_free_replies(info);
-  statistic_effective_by_level_distributed(info, uomResult, eOldEffectiveNum);
-
-  Redis::del_append_comm(l_in_month);
-  Redis::del_append_comm(BM::EFFECTIVE_STAY_USERS);
-  Redis::del_append_comm(BM::EFFECTIVE_USERS);
-  Redis::free_replies();
-}
-
-void User::fill_tbEffectiveUser_Old(const string& str_iso_date) {
-  LOG("\t<user effective>");
-  Utils::loadbar(1);
-
-  ResultTable<TableEffecUserLvDis>::Type result_table;
-
-  timestamp_t t0 = get_timestamp();
-  find_new_effective_users(str_iso_date, result_table);
-  Utils::loadbar(15);
-  LOG("\t\t+ new effective users - done in: ",
-      (get_timestamp() - t0) / 1000000.0L, "s.");
-
-  t0 = get_timestamp();
-  find_num_reg_of_natural_month(str_iso_date, result_table);
-  Utils::loadbar(28);
-  LOG("\t\t+ num reg of natural month - done in: ",
-      (get_timestamp() - t0) / 1000000.0L, "s.");
-
-  t0 = get_timestamp();
-  find_old_effective_users(str_iso_date, result_table);
-  Utils::loadbar(62);
-  LOG("\t\t+ old effective users - done in: ",
-      (get_timestamp() - t0) / 1000000.0L, "s.");
-
-  t0 = get_timestamp();
-  find_back_effective_users(str_iso_date, result_table);
-  Utils::loadbar(79);
-  LOG("\t\t+ back effective users - done in: ",
-      (get_timestamp() - t0) / 1000000.0L, "s.");
-
-  t0 = get_timestamp();
-  for (ResultTable<TableEffecUserLvDis>::Type::iterator sv_lv_it = result_table
-      .begin(); sv_lv_it != result_table.end(); ++sv_lv_it) {
-    (*sv_lv_it).second.iEffectiveNum = (*sv_lv_it).second.iNewEffectiveNum
-      + (*sv_lv_it).second.iOldEffectiveNum
-      + (*sv_lv_it).second.iBackEffectiveNum;
-  }
-  LOG("\t\t+ others effective - done in: ", (get_timestamp() - t0) / 1000000.0L,
-      "s.");
-  Utils::loadbar(85);
-
-  // create new thread to write to result db
-  AuditThread::get_instance().increase_count_thread();
-  boost::thread t(&PoolsManager::write_to_tbEffectiveUser,
-      &PoolsManager::get_instance(), str_iso_date, result_table);
-
-  LOG("\t<done user effective>");
-  Utils::loadbar(100);
-  cout << endl;
-}
-
 void User::fill_tbEffectiveUser(const std::string& str_iso_date) {
   LOG("\t<user effective>");
   Utils::loadbar(1);
@@ -1615,7 +977,7 @@ void User::fill_tbEffectiveUser(const std::string& str_iso_date) {
   date stat_date = from_undelimited_string(str_iso_date);
   date begin_month0 = date(stat_date.year(), stat_date.month(), 1);
 
-  find_new_and_return_effective_users_new(BM::EFFECTIVE_NEW_USERS, 
+  find_new_and_return_effective_users(BM::EFFECTIVE_NEW_USERS, 
       BM::EFFECTIVE_RETURN_USERS, str_iso_date, false);
   find_stay_and_lost_and_last_month_effective_users(BM::EFFECTIVE_STAY_USERS, 
       BM::EFFECTIVE_LOST_USERS, BM::EFFECTIVE_LAST_MONTH, str_iso_date);
@@ -1700,7 +1062,7 @@ void User::fill_tbEffectiveUser(const std::string& str_iso_date) {
   boost::thread t(&PoolsManager::write_to_tbEffectiveUser,
       &PoolsManager::get_instance(), str_iso_date, result_table);
 
-  Utils::loadbar(90);
+  Utils::loadbar(95);
   LOG("\t\t+ write to db - done in: ", (get_timestamp() - t0) / 1000000.0L,
       "s.");
 
@@ -1715,6 +1077,7 @@ void User::fill_tbEffectiveUser(const std::string& str_iso_date) {
      Utils::get_account_from_bitmap(account_names, "BM::EFFECTIVE_STAY_USERS", "stay_effective_right.txt");
      */
   // write to tbEffectiveUserDetail
+  /*
   Redis::bitop_comm("OR", BM::EFFECTIVE_USERS, 
       BM::EFFECTIVE_NEW_USERS + " " + 
       BM::EFFECTIVE_STAY_USERS + " " + 
@@ -1729,6 +1092,7 @@ void User::fill_tbEffectiveUser(const std::string& str_iso_date) {
       &PoolsManager::get_instance(), str_iso_date, account_names);
   LOG("\t\t write to tbEffectiveUserDetail done.");
   Utils::loadbar(95);
+  */
 
   // delete bitmap
   Redis::del_append_comm(BM::EFFECTIVE_USERS);
@@ -2126,6 +1490,56 @@ void User::fill_tbRecoveredUser(const string& str_iso_date) {
   cout << endl;
 }
 
+void User::export_EffectiveUser(const std::string& str_iso_date) {
+  LOG("\t<export user effective>");
+  Utils::loadbar(1);
+  timestamp_t t0 = get_timestamp();
+
+  ResultTable<TableEffecUserLvDis>::Type result_table;
+  vector<string> info;
+
+  find_new_and_return_effective_users(BM::EFFECTIVE_NEW_USERS, 
+      BM::EFFECTIVE_RETURN_USERS, str_iso_date, false);
+  find_stay_and_lost_and_last_month_effective_users(BM::EFFECTIVE_STAY_USERS, 
+      BM::EFFECTIVE_LOST_USERS, BM::EFFECTIVE_LAST_MONTH, str_iso_date);
+
+  Utils::loadbar(55);
+  LOG("\t\t+ find new, return, stay, lost, last_month effective: ", (get_timestamp() - t0) / 1000000.0L, "s.");
+
+  t0 = get_timestamp();
+  Redis::bitop_comm("OR", BM::EFFECTIVE_USERS, 
+      BM::EFFECTIVE_NEW_USERS + " " + 
+      BM::EFFECTIVE_STAY_USERS + " " + 
+      BM::EFFECTIVE_RETURN_USERS);
+
+  vector<string> account_names;
+  account_names.clear();
+  Utils::get_account_from_bitmap(account_names, BM::EFFECTIVE_USERS);
+
+  Utils::loadbar(75);
+  LOG("\t\t+ find effective user: ", (get_timestamp() - t0) / 1000000.0L, "s.");
+
+  // create new thread to write to result db
+  AuditThread::get_instance().increase_count_thread();
+  boost::thread t1(&PoolsManager::write_to_tbEffectiveUserDetail,
+      &PoolsManager::get_instance(), str_iso_date, account_names);
+  LOG("\t\t write to tbEffectiveUserDetail done.");
+  Utils::loadbar(95);
+
+  // delete bitmap
+  Redis::del_append_comm(BM::EFFECTIVE_USERS);
+  Redis::del_append_comm(BM::EFFECTIVE_NEW_USERS);
+  Redis::del_append_comm(BM::EFFECTIVE_RETURN_USERS);
+  Redis::del_append_comm(BM::EFFECTIVE_LAST_MONTH);
+  Redis::del_append_comm(BM::EFFECTIVE_LOST_USERS);
+  Redis::del_append_comm(BM::EFFECTIVE_STAY_USERS);
+  Redis::free_replies();
+
+  LOG("\t<done export user effective>");
+  Utils::loadbar(100);
+  cout << endl;
+}
+
 void User::merge_server(const string& src, const string& dest,
     const string& max_src_id) {
   string key_server_src_template = "hash:" + src + ":*";
@@ -2221,134 +1635,6 @@ void User::clear(const std::string& str_iso_stat_date) {
   Redis::free_replies();
 }
 
-void User::find_new_effective_users_wrong(
-    const string& isoDateStat) {
-
-  if (key_point_date.statis_day - days(config_effective_user.continuous_)
-      < key_point_date.day_begin_month0) {
-    return;
-  }
-
-  date date_iterator0, date_iterator1, date_iterator2, date_iterator3;
-
-  string r2d1 = "tm_r2d1";
-  string r2d0 = "tm_r2d0";
-  string r_in_d0 = "tm_r_in_d0";
-  string r_in_month = "tm_r_in_month";
-
-  vector<unsigned> ids_candidate;
-  vector<string> info;
-  ids_candidate.clear();
-  info.clear();
-
-  string local_candidate = "tm_local_candidate";
-  string keys = "";
-
-  Utils::create_bm_of_period(INDEX::USER, "-inf",
-      to_iso_string(key_point_date.day_end_month1),
-      r2d1);
-
-  Redis::bitop_comm("OR", r2d0, r2d1);
-  Redis::free_reply();
-
-  // loop from begin month0 to statis date
-  // for each day:
-  //    case1: find numbers of user had reg in this day and continuous login 4 day next
-  //    case2: find numbers of user had reg in this day and from 6th day after this day
-  //            to statistic day, he login at least 2 days.
-  for (date_iterator0 = key_point_date.day_begin_month0;
-      date_iterator0
-      <= key_point_date.statis_day - days(config_effective_user.continuous_);
-      date_iterator0 += days(1)) {
-    Redis::bitop_append_comm(
-        "OR",
-        r2d0,
-        r2d1 + " "
-        + Utils::build_key(DATA_TYPE::BITMAP, INDEX::USER,
-          to_iso_string(date_iterator0)));
-
-    Redis::bitop_append_comm("XOR", r_in_d0, r2d1 + " " + r2d0);
-    Redis::bitop_append_comm("OR", r_in_month, r_in_month + " " + r_in_d0);
-
-    //----------------  case 1
-    // if reg in d0 and login continuous 4 days:
-    // reg_d0 AND log_d0 AND log_d1 AND log_d2 AND log_d3 AND log_d4
-    keys = "";
-    for (unsigned i = 0; i <= config_effective_user.continuous_; ++i) {
-      keys += Utils::build_key(DATA_TYPE::BITMAP, INDEX::USER,
-          to_iso_string(date_iterator0 + days(i))) + " ";
-    }
-    keys += r_in_d0;
-
-    Redis::bitop_append_comm("AND", local_candidate, keys);
-    Redis::bitop_append_comm("OR", BM::EFFECTIVE_NEW_USERS,
-        BM::EFFECTIVE_NEW_USERS + " " + local_candidate);
-
-    Redis::del_append_comm(local_candidate);
-    //------------------ case 2
-    // from 6th day (day + 5) duyet toi statis day:
-    // if from 6th day to statis day have at least 2 day login and reg in this month is effective
-    date_iterator1 = date_iterator0 + days(config_effective_user.from_day_n_);
-    for (date_iterator2 = date_iterator1 + days(1);
-        date_iterator2 <= key_point_date.statis_day;
-        date_iterator2 += days(1)) {
-
-      // login_d1 AND login_d2 AND reg_in_month
-      keys = Utils::build_key(DATA_TYPE::BITMAP, INDEX::USER,
-          to_iso_string(date_iterator1)) + " "
-        + Utils::build_key(DATA_TYPE::BITMAP, INDEX::USER,
-            to_iso_string(date_iterator2)) + " " + r_in_month;
-
-      Redis::bitop_append_comm("AND", local_candidate, keys);
-      Redis::bitop_append_comm("OR", BM::EFFECTIVE_NEW_USERS,
-          BM::EFFECTIVE_NEW_USERS + " " + local_candidate);
-
-      Redis::del_append_comm(local_candidate);
-    }
-
-    Redis::bitop_append_comm(
-        "OR",
-        r2d1,
-        r2d1 + " "
-        + Utils::build_key(DATA_TYPE::BITMAP, INDEX::USER,
-          to_iso_string(date_iterator0)));
-    Redis::del_append_comm(r_in_d0);
-  }
-  Redis::free_replies();
-
-
-  //-------------------------------------------------------------------
-  // export effective user
-  timestamp_t t0 = get_timestamp();
-  unsigned bm_size = 0;
-  vector<string> account_names;
-  Redis::strlen_comm(BM::EFFECTIVE_NEW_USERS);
-  bm_size = Redis::reply->integer;
-  Redis::free_reply();
-
-  Redis::get_comm(BM::EFFECTIVE_NEW_USERS);
-  Utils::get_account_from_bitmap(account_names, Redis::reply->str, bm_size, "effective_user_wrong.txt");
-  LOG("\t\t+ find wrong detail effective user: ", (get_timestamp() - t0) / 1000000.0L, "s.");
-  Utils::loadbar(70);
-  // create new thread to write to result db
-  /*
-     AuditThread::get_instance().increase_count_thread();
-     boost::thread t5(&PoolsManager::write_to_tbRecoveredUser,
-     &PoolsManager::get_instance(), str_iso_date, account_names);
-     LOG("\t\t write to RecoveredUser done.");
-     Utils::loadbar(95);
-     */
-  //---------------------------------------------------------------------
-
-  Redis::del_append_comm(r2d1);
-  Redis::del_append_comm(r2d0);
-  Redis::del_append_comm(r_in_d0);
-  //Redis::del_append_comm(r_in_month);
-  Redis::del_append_comm(local_candidate);
-  Redis::del_append_comm(BM::EFFECTIVE_NEW_USERS);
-  Redis::free_replies();
-}
-
 void User::find_user_have_state_effective(
     const std::string& str_iso_date, 
     const std::string& dest_key, 
@@ -2407,7 +1693,7 @@ void User::find_user_have_state_effective(
   Utils::create_bitmap_by_list(ids, dest_key);
 }
 
-void User::find_new_and_return_effective_users_new(
+void User::find_new_and_return_effective_users(
     const std::string& new_effective_user_key,
     const std::string& return_effective_user_key,
     const std::string& str_iso_stat_date, 
@@ -2445,7 +1731,10 @@ void User::find_new_and_return_effective_users_new(
   string bm_not_login_in_last_month = "bm_not_login_in_last_monthwketroi32o";
 
   Redis::bitop_append_comm("NOT", bm_not_login_in_last_month, bm_login_in_last_month);
-  Redis::bitop_append_comm("AND", return_effective_user_key, bm_candidate_effective + " " + bm_reg_to_l2m + " " + bm_not_login_in_last_month);
+  Redis::bitop_append_comm("AND", return_effective_user_key, 
+      bm_candidate_effective + " " + 
+      bm_reg_to_l2m + " " + 
+      bm_not_login_in_last_month);
   Redis::free_replies();
 
   Redis::del_append_comm(bm_reg_in_month);
@@ -2483,7 +1772,7 @@ void User::find_stay_and_lost_and_last_month_effective_users(
     date begin_lm = date((stat_date - months(1)).year(), (stat_date - months(1)).month(), 1);
     date end_lm = begin_lm.end_of_month();
 
-    find_new_and_return_effective_users_new(
+    find_new_and_return_effective_users(
         new_effective_user_last_month_key,
         return_effective_user_last_month_key,
         to_iso_string((stat_date - months(1)).end_of_month()),

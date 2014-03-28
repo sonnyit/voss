@@ -130,38 +130,28 @@ class User : public Base {
    * login 4 days continuous after registered day
    * from the 6th day of the registered day to statis day have at least 2 days login
    */
-  void find_new_effective_users(
-      const std::string& str_iso_stat_date,
-      ResultTable<TableEffecUserLvDis>::Type& uomResult);
-  void find_new_effective_users_of_month(const std::string& isoDateStat);
 
   /*! registered before last natural month, not login in last natural month
    * and in this month:
    * login 5 days continuous or
    * from the 6th day of the first login to statis day have at least 2 days login
    */
-  void find_back_effective_users(
-      const std::string& isoDateStat,
-      ResultTable<TableEffecUserLvDis>::Type& uomResult);
-  void find_back_effective_users_of_month(const std::string& isoDateStat);
 
   /*! effective user from last natural month and in this natural month login
    * at least 1 days.
    */
-  void find_old_effective_users(
-      const std::string& isoDateStat,
-      ResultTable<TableEffecUserLvDis>::Type& uomResult);
 
-  void fill_tbEffectiveUser_Old(const std::string& isoDateStat);
   void fill_tbEffectiveUser(const std::string& isoDateStat);
 
   void fill_tbEffectActivity(const std::string& isoDateStat);
 
   void fill_tbRecoveredUser(const std::string& str_iso_date);
 
+  void export_EffectiveUser(const std::string& str_iso_date);
+
   void find_user_have_state_effective(const std::string& str_iso_date, const std::string& dest_key, const bool& is_stat_month = false);
 
-  void find_new_and_return_effective_users_new(
+  void find_new_and_return_effective_users(
       const std::string& new_effective_user_key,
       const std::string& return_effective_user_key,
       const std::string& str_iso_stat_date,
@@ -190,9 +180,6 @@ class User : public Base {
   
   //!\brief for export user info of recovered_user and effective user
   void user_export(const std::string& str_iso_date);
-
-  void find_new_effective_users_wrong(const std::string& str_iso_date);
-  void find_effective_fix(const std::string& str_iso_date);
 };
 
 #endif /* USER_H_ */
