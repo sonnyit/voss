@@ -1082,6 +1082,7 @@ void User::fill_tbEffectiveUser(const std::string& str_iso_date) {
       BM::EFFECTIVE_NEW_USERS + " " + 
       BM::EFFECTIVE_STAY_USERS + " " + 
       BM::EFFECTIVE_RETURN_USERS);
+  Redis::free_reply();
 
   vector<string> account_names;
   account_names.clear();
@@ -1511,6 +1512,7 @@ void User::export_EffectiveUser(const std::string& str_iso_date) {
       BM::EFFECTIVE_NEW_USERS + " " + 
       BM::EFFECTIVE_STAY_USERS + " " + 
       BM::EFFECTIVE_RETURN_USERS);
+  Redis::free_reply();
 
   vector<string> account_names;
   account_names.clear();
